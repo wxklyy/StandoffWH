@@ -782,6 +782,8 @@ static id hook_cmdBufferUnretained(id self, SEL _cmd) {
 }
 
 static void initMetalHooks() {
+    dlopen("/System/Library/Frameworks/Metal.framework/Metal", RTLD_NOW | RTLD_GLOBAL);
+
     Class baseClass = objc_getClass("_MTLCommandBuffer");
     if (baseClass) hookCommandBufferClass(baseClass);
 
@@ -799,6 +801,16 @@ static void initMetalHooks() {
         }
     }
 }
+
+%hook CAMetalLayer
+- (id<CAMetalDrawable>)nextDrawable {
+    id<CAMetalDrawable> d = %orig;
+    if (!g_hookedCmdBufClass) {
+        initMetalHooks();
+    }
+    return d;
+}
+%end
 
 %hook UIWindow
 - (void)sendEvent:(UIEvent *)event {
@@ -1024,6 +1036,23 @@ static void setupIL2CPPHooks() {
 
         // ── Metal Hooks for ImGui Rendering ──
         initMetalHooks();
+
+        // ── Startup banner ──
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            UIWindow *keyWin = [UIApplication sharedApplication].keyWindow;
+            if (!keyWin) {
+                for (UIWindow *w in [UIApplication sharedApplication].windows) {
+                    if (w.isKeyWindow) { keyWin = w; break; }
+                }
+            }
+            if (keyWin && keyWin.rootViewController) {
+                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"StandoffWH"
+                                                                               message:@"Cheat Loaded!\nTap 3 fingers or SWH button for menu."
+                                                                        preferredStyle:UIAlertControllerStyleAlert];
+                [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+                [keyWin.rootViewController presentViewController:alert animated:YES completion:nil];
+            }
+        });
 
         // ── Delay IL2CPP hooks until Unity is loaded ──
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
