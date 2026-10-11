@@ -10,7 +10,7 @@ include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = StandoffWH
 
-StandoffWH_FILES = src/Tweak.xm \
+StandoffWH_FILES = src/Tweak.mm \
                    src/imgui/imgui.cpp \
                    src/imgui/imgui_draw.cpp \
                    src/imgui/imgui_tables.cpp \

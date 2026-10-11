@@ -801,18 +801,17 @@ static void initMetalHooks() {
     }
 }
 
-%hook CAMetalLayer
-- (id<CAMetalDrawable>)nextDrawable {
-    id<CAMetalDrawable> d = %orig;
+static id<CAMetalDrawable> (*orig_nextDrawable)(id, SEL) = NULL;
+static id<CAMetalDrawable> hook_nextDrawable(id self, SEL _cmd) {
+    id<CAMetalDrawable> d = orig_nextDrawable ? orig_nextDrawable(self, _cmd) : nil;
     if (!g_hookedCmdBufClass) {
         initMetalHooks();
     }
     return d;
 }
-%end
 
-%hook UIWindow
-- (void)sendEvent:(UIEvent *)event {
+static void (*orig_sendEvent)(id, SEL, UIEvent*) = NULL;
+static void hook_sendEvent(id self, SEL _cmd, UIEvent *event) {
     if (event.type == UIEventTypeTouches) {
         NSSet *touches = [event allTouches];
 
@@ -830,7 +829,7 @@ static void initMetalHooks() {
             ImGuiIO& io = ImGui::GetIO();
             UITouch *touch = [touches anyObject];
             if (touch) {
-                CGPoint loc = [touch locationInView:self];
+                CGPoint loc = [touch locationInView:(UIView*)self];
                 CGFloat scale = [UIScreen mainScreen].nativeScale;
                 if (scale <= 0.0) scale = 2.0;
 
@@ -850,9 +849,10 @@ static void initMetalHooks() {
             }
         }
     }
-    %orig(event);
+    if (orig_sendEvent) {
+        orig_sendEvent(self, _cmd, event);
+    }
 }
-%end
 
 // ═══════════════════════════════════════
 // Hook setup — resolve + install (100% standalone, zero Substrate)
@@ -997,11 +997,31 @@ static void setupIL2CPPHooks() {
 }
 
 // ═══════════════════════════════════════
-// CONSTRUCTOR
+// CONSTRUCTOR (Pure C++, zero Substrate)
 // ═══════════════════════════════════════
 
-%ctor {
+__attribute__((constructor)) static void standoff_wh_init(void) {
     @autoreleasepool {
+
+        // hook CAMetalLayer nextDrawable:
+        Class metalLayerClass = objc_getClass("CAMetalLayer");
+        if (metalLayerClass) {
+            Method m = class_getInstanceMethod(metalLayerClass, @selector(nextDrawable));
+            if (m) {
+                orig_nextDrawable = (id<CAMetalDrawable>(*)(id, SEL))method_getImplementation(m);
+                method_setImplementation(m, (IMP)hook_nextDrawable);
+            }
+        }
+
+        // hook UIWindow sendEvent:
+        Class windowClass = objc_getClass("UIWindow");
+        if (windowClass) {
+            Method m = class_getInstanceMethod(windowClass, @selector(sendEvent:));
+            if (m) {
+                orig_sendEvent = (void(*)(id, SEL, UIEvent*))method_getImplementation(m);
+                method_setImplementation(m, (IMP)hook_sendEvent);
+            }
+        }
 
         // hook NSFileManager fileExistsAtPath:
         Method fileExistsMethod = class_getInstanceMethod(
