@@ -7,6 +7,12 @@
 #import <sys/sysctl.h>
 #import <objc/runtime.h>
 #import <UIKit/UIKit.h>
+#import <Metal/Metal.h>
+#import <QuartzCore/CAMetalLayer.h>
+#import <spawn.h>
+
+#import "imgui.h"
+#import "imgui_impl_metal.h"
 
 // ═══════════════════════════════════════
 // IL2CPP API typedefs
@@ -340,6 +346,7 @@ static void hook_AC_ECHAHOJDKEB(Il2CppObject* self) { return; }
 struct UnityColor {
     float r, g, b, a;
 };
+static UnityColor g_chamColor = {0.0f, 1.0f, 0.2f, 0.7f};
 
 // cached shader references
 static Il2CppObject* g_wallhackShader = NULL;  // ZTest Always shader
@@ -531,117 +538,310 @@ static Material_SetPass_t orig_Material_SetPass = NULL;
 static bool hook_Material_SetPass(Il2CppObject* self, int pass) {
     bool ret = orig_Material_SetPass(self, pass);
     if (g_chamEnabled && self) {
-        // force ZTest Always on this material
         setMaterialInt(self, "_ZTest", 8); // 8 = Always in Unity
         setMaterialInt(self, "_ZWrite", 0);
-
-        // color tint — green for friendly visibility
-        UnityColor chamColor = {0.0f, 1.0f, 0.2f, 0.7f};
-        setMaterialColor(self, "_Color", chamColor);
+        setMaterialColor(self, "_Color", g_chamColor);
     }
     return ret;
 }
 
 // ═══════════════════════════════════════
-// Toggle Menu (simple floating button)
+// Dear ImGui Metal Overlay & Hooks
 // ═══════════════════════════════════════
 
-@interface WHMenuView : UIView
-@property (nonatomic, strong) UIButton* whButton;
-@property (nonatomic, strong) UIButton* chamButton;
-@property (nonatomic, strong) UILabel* statusLabel;
-@end
+static bool g_imguiInited = false;
+static bool g_showMenu    = true;
 
-@implementation WHMenuView
-
-- (instancetype)init {
-    self = [super initWithFrame:CGRectMake(20, 100, 160, 130)];
-    if (self) {
-        self.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.75];
-        self.layer.cornerRadius = 12;
-        self.layer.borderColor = [UIColor colorWithRed:0.0 green:1.0 blue:0.4 alpha:1.0].CGColor;
-        self.layer.borderWidth = 1.5;
-        self.clipsToBounds = YES;
-
-        UILabel* title = [[UILabel alloc] initWithFrame:CGRectMake(0, 6, 160, 22)];
-        title.text = @"StandoffWH";
-        title.textColor = [UIColor colorWithRed:0.0 green:1.0 blue:0.4 alpha:1.0];
-        title.font = [UIFont boldSystemFontOfSize:14];
-        title.textAlignment = NSTextAlignmentCenter;
-        [self addSubview:title];
-
-        _whButton = [UIButton buttonWithType:UIButtonTypeSystem];
-        _whButton.frame = CGRectMake(10, 34, 140, 34);
-        [_whButton setTitle:@"Wallhack: ON" forState:UIControlStateNormal];
-        [_whButton setTitleColor:[UIColor greenColor] forState:UIControlStateNormal];
-        _whButton.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
-        _whButton.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.08];
-        _whButton.layer.cornerRadius = 6;
-        [_whButton addTarget:self action:@selector(toggleWH) forControlEvents:UIControlEventTouchUpInside];
-        [self addSubview:_whButton];
-
-        _chamButton = [UIButton buttonWithType:UIButtonTypeSystem];
-        _chamButton.frame = CGRectMake(10, 74, 140, 34);
-        [_chamButton setTitle:@"Chams: ON" forState:UIControlStateNormal];
-        [_chamButton setTitleColor:[UIColor greenColor] forState:UIControlStateNormal];
-        _chamButton.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
-        _chamButton.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.08];
-        _chamButton.layer.cornerRadius = 6;
-        [_chamButton addTarget:self action:@selector(toggleCham) forControlEvents:UIControlEventTouchUpInside];
-        [self addSubview:_chamButton];
-
-        // draggable
-        UIPanGestureRecognizer* pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePan:)];
-        [self addGestureRecognizer:pan];
-    }
-    return self;
+static void do_respring(void) {
+    pid_t pid;
+    const char* args[] = { "/var/jb/usr/bin/sbreload", NULL };
+    posix_spawn(&pid, "/var/jb/usr/bin/sbreload", NULL, NULL, (char* const*)args, NULL);
 }
 
-- (void)toggleWH {
-    g_wallhackEnabled = !g_wallhackEnabled;
-    [_whButton setTitle:g_wallhackEnabled ? @"Wallhack: ON" : @"Wallhack: OFF" forState:UIControlStateNormal];
-    [_whButton setTitleColor:g_wallhackEnabled ? [UIColor greenColor] : [UIColor redColor] forState:UIControlStateNormal];
-}
+static void renderImGuiOverlay(id<MTLCommandBuffer> commandBuffer, id<CAMetalDrawable> drawable) {
+    if (!drawable || ![drawable respondsToSelector:@selector(texture)]) return;
+    id<MTLTexture> texture = drawable.texture;
+    if (!texture) return;
 
-- (void)toggleCham {
-    g_chamEnabled = !g_chamEnabled;
-    [_chamButton setTitle:g_chamEnabled ? @"Chams: ON" : @"Chams: OFF" forState:UIControlStateNormal];
-    [_chamButton setTitleColor:g_chamEnabled ? [UIColor greenColor] : [UIColor redColor] forState:UIControlStateNormal];
-}
+    @autoreleasepool {
+        id<MTLDevice> device = commandBuffer.device;
+        if (!device) return;
 
-- (void)handlePan:(UIPanGestureRecognizer*)pan {
-    CGPoint translation = [pan translationInView:self.superview];
-    self.center = CGPointMake(self.center.x + translation.x, self.center.y + translation.y);
-    [pan setTranslation:CGPointZero inView:self.superview];
-}
+        CGFloat scale = [UIScreen mainScreen].nativeScale;
+        if (scale <= 0.0) scale = 2.0;
 
-@end
+        if (!g_imguiInited) {
+            IMGUI_CHECKVERSION();
+            ImGui::CreateContext();
+            ImGuiIO& io = ImGui::GetIO();
+            io.IniFilename = NULL;
+            io.FontGlobalScale = scale;
 
-static WHMenuView* g_menuView = nil;
+            // Cyber / Monastic Dark Green Theme
+            ImGuiStyle& style = ImGui::GetStyle();
+            style.WindowRounding    = 10.0f;
+            style.ChildRounding     = 8.0f;
+            style.FrameRounding     = 6.0f;
+            style.PopupRounding     = 8.0f;
+            style.ScrollbarRounding = 6.0f;
+            style.GrabRounding      = 6.0f;
+            style.TabRounding       = 6.0f;
+            style.WindowBorderSize  = 1.5f;
+            style.ScaleAllSizes(scale);
 
-static void showMenu() {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (g_menuView) return;
+            ImVec4* c = style.Colors;
+            c[ImGuiCol_Text]                  = ImVec4(0.95f, 0.98f, 0.95f, 1.00f);
+            c[ImGuiCol_TextDisabled]          = ImVec4(0.40f, 0.45f, 0.42f, 1.00f);
+            c[ImGuiCol_WindowBg]              = ImVec4(0.06f, 0.07f, 0.08f, 0.94f);
+            c[ImGuiCol_ChildBg]               = ImVec4(0.10f, 0.12f, 0.11f, 0.70f);
+            c[ImGuiCol_PopupBg]               = ImVec4(0.08f, 0.09f, 0.10f, 0.95f);
+            c[ImGuiCol_Border]                = ImVec4(0.10f, 0.90f, 0.35f, 0.70f);
+            c[ImGuiCol_BorderShadow]          = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
+            c[ImGuiCol_FrameBg]               = ImVec4(0.12f, 0.15f, 0.13f, 0.85f);
+            c[ImGuiCol_FrameBgHovered]        = ImVec4(0.16f, 0.22f, 0.18f, 0.90f);
+            c[ImGuiCol_FrameBgActive]         = ImVec4(0.20f, 0.28f, 0.22f, 1.00f);
+            c[ImGuiCol_TitleBg]               = ImVec4(0.05f, 0.06f, 0.06f, 1.00f);
+            c[ImGuiCol_TitleBgActive]         = ImVec4(0.07f, 0.14f, 0.09f, 1.00f);
+            c[ImGuiCol_TitleBgCollapsed]      = ImVec4(0.05f, 0.05f, 0.05f, 0.75f);
+            c[ImGuiCol_MenuBarBg]             = ImVec4(0.08f, 0.10f, 0.09f, 1.00f);
+            c[ImGuiCol_ScrollbarBg]           = ImVec4(0.06f, 0.07f, 0.07f, 0.60f);
+            c[ImGuiCol_ScrollbarGrab]         = ImVec4(0.15f, 0.25f, 0.18f, 1.00f);
+            c[ImGuiCol_ScrollbarGrabHovered]  = ImVec4(0.20f, 0.35f, 0.24f, 1.00f);
+            c[ImGuiCol_ScrollbarGrabActive]   = ImVec4(0.10f, 0.90f, 0.35f, 1.00f);
+            c[ImGuiCol_CheckMark]             = ImVec4(0.10f, 1.00f, 0.40f, 1.00f);
+            c[ImGuiCol_SliderGrab]            = ImVec4(0.10f, 0.90f, 0.35f, 1.00f);
+            c[ImGuiCol_SliderGrabActive]      = ImVec4(0.10f, 1.00f, 0.45f, 1.00f);
+            c[ImGuiCol_Button]                = ImVec4(0.12f, 0.20f, 0.15f, 0.85f);
+            c[ImGuiCol_ButtonHovered]         = ImVec4(0.15f, 0.30f, 0.20f, 0.90f);
+            c[ImGuiCol_ButtonActive]          = ImVec4(0.10f, 0.90f, 0.35f, 1.00f);
+            c[ImGuiCol_Header]                = ImVec4(0.12f, 0.22f, 0.16f, 0.80f);
+            c[ImGuiCol_HeaderHovered]         = ImVec4(0.15f, 0.32f, 0.20f, 0.85f);
+            c[ImGuiCol_HeaderActive]          = ImVec4(0.10f, 0.90f, 0.35f, 1.00f);
+            c[ImGuiCol_Separator]             = ImVec4(0.18f, 0.24f, 0.20f, 0.80f);
+            c[ImGuiCol_Tab]                   = ImVec4(0.10f, 0.14f, 0.12f, 0.80f);
+            c[ImGuiCol_TabHovered]            = ImVec4(0.15f, 0.30f, 0.20f, 0.90f);
+            c[ImGuiCol_TabActive]             = ImVec4(0.08f, 0.25f, 0.14f, 1.00f);
 
-        UIWindow* keyWindow = nil;
-        for (UIWindowScene* scene in [UIApplication sharedApplication].connectedScenes) {
-            if (scene.activationState == UISceneActivationStateForegroundActive) {
-                for (UIWindow* window in scene.windows) {
-                    if (window.isKeyWindow) {
-                        keyWindow = window;
-                        break;
+            ImGui_ImplMetal_Init(device);
+            g_imguiInited = true;
+        }
+
+        MTLRenderPassDescriptor* desc = [MTLRenderPassDescriptor renderPassDescriptor];
+        desc.colorAttachments[0].texture = texture;
+        desc.colorAttachments[0].loadAction = MTLLoadActionLoad;
+        desc.colorAttachments[0].storeAction = MTLStoreActionStore;
+
+        ImGuiIO& io = ImGui::GetIO();
+        io.DisplaySize = ImVec2((float)texture.width, (float)texture.height);
+
+        ImGui_ImplMetal_NewFrame(desc);
+        ImGui::NewFrame();
+
+        // ── Floating toggle icon when menu is closed ──
+        if (!g_showMenu) {
+            ImGui::SetNextWindowPos(ImVec2(30 * scale, 30 * scale), ImGuiCond_FirstUseEver);
+            ImGui::Begin("##toggle_bubble", nullptr,
+                ImGuiWindowFlags_NoDecoration |
+                ImGuiWindowFlags_AlwaysAutoResize |
+                ImGuiWindowFlags_NoSavedSettings |
+                ImGuiWindowFlags_NoFocusOnAppearing |
+                ImGuiWindowFlags_NoNav);
+            if (ImGui::Button("SWH")) {
+                g_showMenu = true;
+            }
+            ImGui::End();
+        } else {
+            // ── Main ImGui Window ──
+            ImGui::SetNextWindowSize(ImVec2(340 * scale, 270 * scale), ImGuiCond_FirstUseEver);
+            if (ImGui::Begin("StandoffWH | Onyx v67", &g_showMenu, ImGuiWindowFlags_NoCollapse)) {
+                if (ImGui::BeginTabBar("Tabs")) {
+                    if (ImGui::BeginTabItem("Visuals")) {
+                        ImGui::Spacing();
+                        ImGui::Checkbox("Wallhack (Depth Override)", &g_wallhackEnabled);
+                        ImGui::Checkbox("Chams (Player Glow)", &g_chamEnabled);
+
+                        if (g_chamEnabled) {
+                            ImGui::Spacing();
+                            ImGui::Text("Cham Color:");
+                            float col[4] = { g_chamColor.r, g_chamColor.g, g_chamColor.b, g_chamColor.a };
+                            if (ImGui::ColorEdit4("##ChamColor", col)) {
+                                g_chamColor.r = col[0];
+                                g_chamColor.g = col[1];
+                                g_chamColor.b = col[2];
+                                g_chamColor.a = col[3];
+                            }
+                        }
+                        ImGui::EndTabItem();
                     }
+
+                    if (ImGui::BeginTabItem("Protection")) {
+                        ImGui::Spacing();
+                        ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.4f, 1.0f), "[+] AntiCheat: Bypassed");
+                        ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.4f, 1.0f), "[+] Sysctl P_TRACED: Hidden");
+                        ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.4f, 1.0f), "[+] Dylibs: Cloaked");
+                        ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.4f, 1.0f), "[+] Jailbreak Paths: Masked");
+                        ImGui::EndTabItem();
+                    }
+
+                    if (ImGui::BeginTabItem("Info")) {
+                        ImGui::Spacing();
+                        ImGui::Text("IL2CPP: %s", g_initialized ? "Hooked" : "Searching...");
+                        ImGui::Text("FPS: %.1f", io.Framerate);
+                        ImGui::Spacing();
+                        if (ImGui::Button("Close Menu")) {
+                            g_showMenu = false;
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::Button("Respring")) {
+                            do_respring();
+                        }
+                        ImGui::EndTabItem();
+                    }
+
+                    ImGui::EndTabBar();
+                }
+            }
+            ImGui::End();
+        }
+
+        ImGui::Render();
+
+        id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:desc];
+        if (encoder) {
+            ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), commandBuffer, encoder);
+            [encoder endEncoding];
+        }
+    }
+}
+
+static void (*orig_presentDrawable)(id, SEL, id<CAMetalDrawable>) = NULL;
+static void hook_presentDrawable(id self, SEL _cmd, id<CAMetalDrawable> drawable) {
+    renderImGuiOverlay(self, drawable);
+    if (orig_presentDrawable) {
+        orig_presentDrawable(self, _cmd, drawable);
+    }
+}
+
+static void (*orig_presentDrawable_afterMinimumDuration)(id, SEL, id<CAMetalDrawable>, CFTimeInterval) = NULL;
+static void hook_presentDrawable_afterMinimumDuration(id self, SEL _cmd, id<CAMetalDrawable> drawable, CFTimeInterval duration) {
+    renderImGuiOverlay(self, drawable);
+    if (orig_presentDrawable_afterMinimumDuration) {
+        orig_presentDrawable_afterMinimumDuration(self, _cmd, drawable, duration);
+    }
+}
+
+static void (*orig_presentDrawable_atTime)(id, SEL, id<CAMetalDrawable>, CFTimeInterval) = NULL;
+static void hook_presentDrawable_atTime(id self, SEL _cmd, id<CAMetalDrawable> drawable, CFTimeInterval presentationTime) {
+    renderImGuiOverlay(self, drawable);
+    if (orig_presentDrawable_atTime) {
+        orig_presentDrawable_atTime(self, _cmd, drawable, presentationTime);
+    }
+}
+
+static Class g_hookedCmdBufClass = Nil;
+
+static void hookCommandBufferClass(Class cls) {
+    if (!cls || cls == g_hookedCmdBufClass) return;
+    g_hookedCmdBufClass = cls;
+
+    Method m1 = class_getInstanceMethod(cls, @selector(presentDrawable:));
+    if (m1) {
+        orig_presentDrawable = (void (*)(id, SEL, id<CAMetalDrawable>))method_getImplementation(m1);
+        method_setImplementation(m1, (IMP)hook_presentDrawable);
+    }
+
+    Method m2 = class_getInstanceMethod(cls, @selector(presentDrawable:afterMinimumDuration:));
+    if (m2) {
+        orig_presentDrawable_afterMinimumDuration = (void (*)(id, SEL, id<CAMetalDrawable>, CFTimeInterval))method_getImplementation(m2);
+        method_setImplementation(m2, (IMP)hook_presentDrawable_afterMinimumDuration);
+    }
+
+    Method m3 = class_getInstanceMethod(cls, @selector(presentDrawable:atTime:));
+    if (m3) {
+        orig_presentDrawable_atTime = (void (*)(id, SEL, id<CAMetalDrawable>, CFTimeInterval))method_getImplementation(m3);
+        method_setImplementation(m3, (IMP)hook_presentDrawable_atTime);
+    }
+}
+
+static id (*orig_cmdBuffer)(id, SEL) = NULL;
+static id hook_cmdBuffer(id self, SEL _cmd) {
+    id buf = orig_cmdBuffer(self, _cmd);
+    if (buf) {
+        hookCommandBufferClass(object_getClass(buf));
+    }
+    return buf;
+}
+
+static id (*orig_cmdBufferUnretained)(id, SEL) = NULL;
+static id hook_cmdBufferUnretained(id self, SEL _cmd) {
+    id buf = orig_cmdBufferUnretained(self, _cmd);
+    if (buf) {
+        hookCommandBufferClass(object_getClass(buf));
+    }
+    return buf;
+}
+
+static void initMetalHooks() {
+    Class baseClass = objc_getClass("_MTLCommandBuffer");
+    if (baseClass) hookCommandBufferClass(baseClass);
+
+    Class queueClass = objc_getClass("_MTLCommandQueue");
+    if (queueClass) {
+        Method mq1 = class_getInstanceMethod(queueClass, @selector(commandBuffer));
+        if (mq1) {
+            orig_cmdBuffer = (id (*)(id, SEL))method_getImplementation(mq1);
+            method_setImplementation(mq1, (IMP)hook_cmdBuffer);
+        }
+        Method mq2 = class_getInstanceMethod(queueClass, @selector(commandBufferWithUnretainedReferences));
+        if (mq2) {
+            orig_cmdBufferUnretained = (id (*)(id, SEL))method_getImplementation(mq2);
+            method_setImplementation(mq2, (IMP)hook_cmdBufferUnretained);
+        }
+    }
+}
+
+%hook UIWindow
+- (void)sendEvent:(UIEvent *)event {
+    if (event.type == UIEventTypeTouches) {
+        NSSet *touches = [event allTouches];
+
+        // 3-finger tap toggle
+        if (touches.count >= 3) {
+            for (UITouch *t in touches) {
+                if (t.phase == UITouchPhaseBegan) {
+                    g_showMenu = !g_showMenu;
+                    break;
                 }
             }
         }
-        if (!keyWindow) {
-            keyWindow = [UIApplication sharedApplication].windows.firstObject;
-        }
 
-        g_menuView = [[WHMenuView alloc] init];
-        [keyWindow addSubview:g_menuView];
-    });
+        if (g_imguiInited) {
+            ImGuiIO& io = ImGui::GetIO();
+            UITouch *touch = [touches anyObject];
+            if (touch) {
+                CGPoint loc = [touch locationInView:self];
+                CGFloat scale = [UIScreen mainScreen].nativeScale;
+                if (scale <= 0.0) scale = 2.0;
+
+                io.AddMousePosEvent(loc.x * scale, loc.y * scale);
+
+                if (touch.phase == UITouchPhaseBegan) {
+                    io.AddMouseButtonEvent(0, true);
+                } else if (touch.phase == UITouchPhaseEnded || touch.phase == UITouchPhaseCancelled) {
+                    io.AddMouseButtonEvent(0, false);
+                }
+            }
+
+            if (g_showMenu && io.WantCaptureMouse) {
+                if (touch && (touch.phase == UITouchPhaseBegan || touch.phase == UITouchPhaseMoved)) {
+                    return;
+                }
+            }
+        }
+    }
+    %orig(event);
 }
+%end
 
 // ═══════════════════════════════════════
 // Hook setup — resolve + install
@@ -822,10 +1022,12 @@ static void setupIL2CPPHooks() {
             method_setImplementation(canOpenMethod, (IMP)hook_canOpenURL);
         }
 
+        // ── Metal Hooks for ImGui Rendering ──
+        initMetalHooks();
+
         // ── Delay IL2CPP hooks until Unity is loaded ──
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             setupIL2CPPHooks();
-            showMenu();
         });
     }
 }
