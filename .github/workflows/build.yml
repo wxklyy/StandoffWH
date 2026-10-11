@@ -27,13 +27,23 @@ jobs:
           # grab iOS 14.5 SDK (patched for theos)
           curl -sL https://github.com/theos/sdks/archive/master.tar.gz | tar xz -C $THEOS/sdks --strip-components=1
 
-      - name: Build tweak
+      - name: Build tweak (rootless for Dopamine)
         run: |
           export THEOS=$HOME/theos
           export PATH=$THEOS/bin:$PATH
 
-          # build the .deb package
           make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+
+          mkdir -p output
+          ROOTLESS_DEB=$(find packages -name "*iphoneos-arm64.deb" | head -1)
+          if [ -n "$ROOTLESS_DEB" ]; then
+            cp "$ROOTLESS_DEB" output/StandoffWH_rootless_Dopamine.deb
+          fi
+
+          DYLIB=$(find .theos -type f -name "StandoffWH.dylib" ! -path "*.dSYM*" | head -1)
+          if [ -n "$DYLIB" ]; then
+            cp "$DYLIB" output/StandoffWH.dylib
+          fi
         env:
           THEOS_DEVICE_IP: ""
 
@@ -44,20 +54,23 @@ jobs:
 
           make clean
           make package FINALPACKAGE=1
+
+          ROOTFUL_DEB=$(find packages -name "*iphoneos-arm.deb" | head -1)
+          if [ -n "$ROOTFUL_DEB" ]; then
+            cp "$ROOTFUL_DEB" output/StandoffWH_rootful.deb
+          fi
         env:
           THEOS_DEVICE_IP: ""
 
       - name: Collect artifacts
         run: |
-          mkdir -p output
-          cp packages/*.deb output/ 2>/dev/null || true
           ls -la output/
 
-      - name: Upload .deb
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: StandoffWH-deb
-          path: output/*.deb
+          name: StandoffWH-release
+          path: output/*
           retention-days: 30
 
       - name: Create Release (on tag)

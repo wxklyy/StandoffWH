@@ -1,1 +1,1 @@
-{ Filter = { Bundles = ( "com.axlebolt.standoff2", "com.Rise.Rework", "com.standrise.game" ); }; }
+{ Filter = { Bundles = ( "com.axlebolt.standoff2", "com.Rise.Rework", "com.standrise.game" ); Executables = ( "StandRiseRE", "standoff2" ); }; }
