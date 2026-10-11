@@ -1,0 +1,9 @@
+Package: com.onyx.standoffwh
+Name: StandoffWH
+Version: 1.0.0
+Architecture: iphoneos-arm
+Description: Runtime wallhack for Standoff 2
+Maintainer: onyx
+Author: onyx
+Section: Tweaks
+Depends: mobilesubstrate
