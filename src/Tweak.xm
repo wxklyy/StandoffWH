@@ -1039,11 +1039,10 @@ static void setupIL2CPPHooks() {
 
         // ── Startup banner ──
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            UIWindow *keyWin = [UIApplication sharedApplication].keyWindow;
-            if (!keyWin) {
-                for (UIWindow *w in [UIApplication sharedApplication].windows) {
-                    if (w.isKeyWindow) { keyWin = w; break; }
-                }
+            UIWindow *keyWin = nil;
+            NSArray *windows = [UIApplication sharedApplication].windows;
+            for (UIWindow *w in windows) {
+                if (w.isKeyWindow || w.rootViewController) { keyWin = w; break; }
             }
             if (keyWin && keyWin.rootViewController) {
                 UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"StandoffWH"
