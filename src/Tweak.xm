@@ -781,7 +781,7 @@ static void setupIL2CPPHooks() {
             void* ptr = *(void**)banMethod;
             if (ptr) {
                 static ACMethod_void_t orig_ban = NULL;
-                MSHookFunction(ptr, (void*)(ACMethod_void_t)[](Il2CppObject*){}, (void**)&orig_ban);
+                MSHookFunction(ptr, (void*)hook_AC_ECHAHOJDKEB, (void**)&orig_ban);
             }
         }
     }

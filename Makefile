@@ -10,7 +10,7 @@ include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = StandoffWH
 
-StandoffWH_FILES = src/Tweak.mm
+StandoffWH_FILES = src/Tweak.xm
 StandoffWH_CFLAGS = -fobjc-arc -std=c++17 -Wno-unused-function -Wno-unused-variable
 StandoffWH_FRAMEWORKS = UIKit Foundation QuartzCore CoreGraphics
 StandoffWH_PRIVATE_FRAMEWORKS =
