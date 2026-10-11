@@ -20,7 +20,7 @@ StandoffWH_FILES = src/Tweak.xm \
 StandoffWH_CFLAGS = -fobjc-arc -std=c++17 -Isrc -Isrc/imgui -Wno-unused-function -Wno-unused-variable -Wno-nullability-completeness -Wno-deprecated-declarations -Wno-error
 StandoffWH_FRAMEWORKS = UIKit Foundation QuartzCore CoreGraphics Metal MetalKit
 StandoffWH_PRIVATE_FRAMEWORKS =
-StandoffWH_LDFLAGS = -lsubstrate
+StandoffWH_LDFLAGS =
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 

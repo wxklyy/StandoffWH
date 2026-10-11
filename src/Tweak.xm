@@ -1,7 +1,6 @@
 // StandoffWH — Wallhack tweak for Standoff 2 (Unity IL2CPP, iOS arm64)
 // Runtime IL2CPP resolution + shader-based WH + anticheat bypass
 
-#import <substrate.h>
 #import <dlfcn.h>
 #import <mach-o/dyld.h>
 #import <sys/sysctl.h>
@@ -856,8 +855,17 @@ static void initMetalHooks() {
 %end
 
 // ═══════════════════════════════════════
-// Hook setup — resolve + install
+// Hook setup — resolve + install (100% standalone, zero Substrate)
 // ═══════════════════════════════════════
+
+static void HookIL2CPP(Il2CppMethodInfo* method, void* hook, void** orig) {
+    if (!method) return;
+    void** ptr = (void**)method;
+    if (orig && *orig == NULL) {
+        *orig = *ptr;
+    }
+    *ptr = hook;
+}
 
 static void setupIL2CPPHooks() {
     if (!resolveIL2CPP()) return;
@@ -905,18 +913,14 @@ static void setupIL2CPPHooks() {
 
     // ── Shader.Find hook ──
     if (g_shaderFind) {
-        void* shaderFindPtr = *(void**)g_shaderFind;  // methodPointer is first field
-        if (shaderFindPtr) {
-            MSHookFunction(shaderFindPtr, (void*)hook_ShaderFind, (void**)&orig_ShaderFind);
-        }
+        HookIL2CPP(g_shaderFind, (void*)hook_ShaderFind, (void**)&orig_ShaderFind);
     }
 
     // ── Camera.set_cullingMask hook ──
     if (g_cameraClass) {
         Il2CppMethodInfo* setCulling = il2cpp_class_get_method_from_name(g_cameraClass, "set_cullingMask", 1);
         if (setCulling) {
-            void* ptr = *(void**)setCulling;
-            if (ptr) MSHookFunction(ptr, (void*)hook_Camera_set_cullingMask, (void**)&orig_Camera_set_cullingMask);
+            HookIL2CPP(setCulling, (void*)hook_Camera_set_cullingMask, (void**)&orig_Camera_set_cullingMask);
         }
     }
 
@@ -924,8 +928,7 @@ static void setupIL2CPPHooks() {
     if (g_materialClass) {
         Il2CppMethodInfo* setPass = il2cpp_class_get_method_from_name(g_materialClass, "SetPass", 1);
         if (setPass) {
-            void* ptr = *(void**)setPass;
-            if (ptr) MSHookFunction(ptr, (void*)hook_Material_SetPass, (void**)&orig_Material_SetPass);
+            HookIL2CPP(setPass, (void*)hook_Material_SetPass, (void**)&orig_Material_SetPass);
         }
     }
 
@@ -945,11 +948,8 @@ static void setupIL2CPPHooks() {
             for (int i = 0; occMethodNames[i]; i++) {
                 Il2CppMethodInfo* m = il2cpp_class_get_method_from_name(occClass, occMethodNames[i], 0);
                 if (m) {
-                    void* ptr = *(void**)m;
-                    if (ptr) {
-                        MSHookFunction(ptr, (void*)hook_IsOccluded, (void**)&orig_IsOccluded);
-                        break;
-                    }
+                    HookIL2CPP(m, (void*)hook_IsOccluded, (void**)&orig_IsOccluded);
+                    break;
                 }
             }
         }
@@ -970,8 +970,7 @@ static void setupIL2CPPHooks() {
         for (auto& h : acHooks) {
             Il2CppMethodInfo* m = il2cpp_class_get_method_from_name(g_antiCheatClass, h.name, h.argc);
             if (m) {
-                void* ptr = *(void**)m;
-                if (ptr) MSHookFunction(ptr, h.hook, h.orig);
+                HookIL2CPP(m, h.hook, h.orig);
             }
         }
     }
@@ -982,19 +981,15 @@ static void setupIL2CPPHooks() {
         if (!reportMethod) reportMethod = il2cpp_class_get_method_from_name(g_gameACClass, "ReportViaServer", 1);
         if (!reportMethod) reportMethod = il2cpp_class_get_method_from_name(g_gameACClass, "ReportViaServer", 3);
         if (reportMethod) {
-            void* ptr = *(void**)reportMethod;
-            if (ptr) MSHookFunction(ptr, (void*)hook_ReportViaServer, (void**)&orig_ReportViaServer);
+            HookIL2CPP(reportMethod, (void*)hook_ReportViaServer, (void**)&orig_ReportViaServer);
         }
 
         // also hook PlayerBannedHandler to no-op
         Il2CppMethodInfo* banMethod = il2cpp_class_get_method_from_name(g_gameACClass, "PlayerBannedHandler", 1);
         if (!banMethod) banMethod = il2cpp_class_get_method_from_name(g_gameACClass, "PlayerBannedHandler", 0);
         if (banMethod) {
-            void* ptr = *(void**)banMethod;
-            if (ptr) {
-                static ACMethod_void_t orig_ban = NULL;
-                MSHookFunction(ptr, (void*)hook_AC_ECHAHOJDKEB, (void**)&orig_ban);
-            }
+            static ACMethod_void_t orig_ban = NULL;
+            HookIL2CPP(banMethod, (void*)hook_AC_ECHAHOJDKEB, (void**)&orig_ban);
         }
     }
 
@@ -1007,12 +1002,6 @@ static void setupIL2CPPHooks() {
 
 %ctor {
     @autoreleasepool {
-        // ── System-level anti-detection hooks (before game loads) ──
-        MSHookFunction((void*)sysctl, (void*)hook_sysctl, (void**)&orig_sysctl);
-        MSHookFunction((void*)access, (void*)hook_access, (void**)&orig_access);
-        MSHookFunction((void*)fork, (void*)hook_fork, (void**)&orig_fork);
-        MSHookFunction((void*)_dyld_image_count, (void*)hook_dyld_image_count, (void**)&orig_dyld_image_count);
-        MSHookFunction((void*)_dyld_get_image_name, (void*)hook_dyld_get_image_name, (void**)&orig_dyld_get_image_name);
 
         // hook NSFileManager fileExistsAtPath:
         Method fileExistsMethod = class_getInstanceMethod(
